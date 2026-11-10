@@ -4,6 +4,7 @@ API密钥安全配置验证工具
 """
 import os
 import re
+import subprocess
 from dotenv import load_dotenv
 
 def check_env_file_security():
@@ -20,20 +21,21 @@ def check_env_file_security():
     
     print("✅ .env文件存在")
     
-    # 检查.gitignore是否包含.env
-    gitignore_file = os.path.join(base_dir, ".gitignore")
-    if os.path.exists(gitignore_file):
-        with open(gitignore_file, 'r') as f:
-            gitignore_content = f.read()
-            if '.env' in gitignore_content:
-                print("✅ .env文件已添加到.gitignore中")
-            else:
-                print("⚠️  .env文件未添加到.gitignore中")
-    else:
-        print("⚠️  .gitignore文件不存在")
+    # Let Git evaluate ignore rules, negations and whether the file is tracked.
+    try:
+        ignored = subprocess.run(
+            ['git', '-C', base_dir, 'check-ignore', '--quiet', '--', '.env'],
+            capture_output=True, check=False
+        ).returncode == 0
+    except OSError:
+        ignored = False
+    if not ignored:
+        print("❌ 无法确认.env文件已被Git忽略且未被跟踪")
+        return False
+    print("✅ .env文件已被Git忽略且未被跟踪")
     
     # 加载环境变量
-    load_dotenv()
+    load_dotenv(env_file)
     
     # 检查各个API密钥
     api_keys = {
@@ -46,9 +48,7 @@ def check_env_file_security():
     print("\n🔑 API密钥配置状态:")
     for key_name, key_value in api_keys.items():
         if key_value:
-            # 脱敏显示
-            masked_key = f"{key_value[:10]}...{key_value[-4:]}" if len(key_value) > 14 else "***"
-            print(f"✅ {key_name}: {masked_key} (已配置)")
+            print(f"✅ {key_name}: 已配置")
         else:
             print(f"❌ {key_name}: 未配置")
     
@@ -90,11 +90,10 @@ def check_code_security():
                 
                 # 检查是否有硬编码的API密钥
                 for pattern in api_key_patterns:
-                    matches = re.findall(pattern, content)
-                    if matches:
-                        for match in matches:
+                    for line_number, line in enumerate(content.splitlines(), 1):
+                        for match in re.findall(pattern, line):
                             if not match.startswith('os.getenv') and 'your_' not in match.lower():
-                                security_issues.append(f"{file_path}: 发现可能的硬编码API密钥: {match[:20]}...")
+                                security_issues.append(f"{os.path.basename(file_path)}:{line_number}: 发现可能的硬编码API密钥")
     
     if security_issues:
         print("\n❌ 发现安全问题:")
@@ -124,4 +123,4 @@ def generate_security_report():
     return env_secure and code_secure
 
 if __name__ == "__main__":
-    generate_security_report()
+    raise SystemExit(0 if generate_security_report() else 1)

@@ -13,7 +13,5 @@ export OPENAI_BASE_URL="https://api.moonshot.cn/v1"
 export OPENAI_API_KEY="$MOONSHOT_API_KEY"
 
 # Use Claude Code via router.
-# NOTE: --dangerously-skip-permissions bypasses all Claude Code permission prompts.
-# Only use this on a machine you fully trust and control. Do NOT run as root or on
-# a shared/public server. Remove this flag if you want interactive permission gates.
-exec "$(dirname "$0")/claude" --model moonshot-v1-8k --dangerously-skip-permissions "$@"
+# Keep permission prompts enabled; callers can explicitly choose their own flags.
+exec "$(dirname "$0")/claude" --model moonshot-v1-8k "$@"

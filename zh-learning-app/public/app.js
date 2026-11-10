@@ -12,6 +12,7 @@ $('#translate').addEventListener('click', async () => {
       body: JSON.stringify({ english, granularity })
     })
     const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
     $('#result').style.display = 'block'
     $('#zh').textContent = data.chinese || ''
     $('#py').textContent = data.pinyin || ''

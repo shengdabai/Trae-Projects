@@ -1,6 +1,4 @@
-// NOTE: This server is designed as a LOCAL development tool.
-// If deploying to a public network, add Helmet for security headers and
-// configure CORS to restrict allowed origins before exposing any endpoints.
+// Local development tool: listen only on the loopback interface.
 import express from 'express'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -11,28 +9,32 @@ import nodejieba from 'nodejieba'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const app = express()
-app.use(express.json({ limit: '1mb' }))
-app.use(express.static(path.join(__dirname, 'public')))
-
-app.get('/health', (req, res) => {
-  res.json({ ok: true })
-})
-
-let en2zh = null
-let zh2en = null
-
 function normalizeEnglish(input) {
   return String(input || '')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
-async function getPipelines() {
-  if (!en2zh) en2zh = await pipeline('translation', 'Xenova/opus-mt-en-zh')
-  if (!zh2en) zh2en = await pipeline('translation', 'Xenova/opus-mt-zh-en')
-  return { en2zh, zh2en }
+export function createPipelineLoader(createPipeline) {
+  let pending
+  let en2zh
+  let zh2en
+  return () => {
+    if (!pending) {
+      pending = (async () => {
+        if (!en2zh) en2zh = await createPipeline('translation', 'Xenova/opus-mt-en-zh')
+        if (!zh2en) zh2en = await createPipeline('translation', 'Xenova/opus-mt-zh-en')
+        return { en2zh, zh2en }
+      })().catch(error => {
+        pending = null
+        throw error
+      })
+    }
+    return pending
+  }
 }
+
+const getPipelines = createPipelineLoader(pipeline)
 
 function toPinyin(text) {
   return pinyin(text, { toneType: 'symbol', type: 'array' }).join(' ')
@@ -78,50 +80,69 @@ function rateLimit(req, res, next) {
 
 const VALID_GRANULARITIES = new Set(['word', 'char'])
 
-app.post('/api/translate', rateLimit, async (req, res) => {
-  try {
-    const { english = '', granularity: rawGranularity = 'word' } = req.body || {}
-    const norm = normalizeEnglish(english)
-    if (!norm) return res.status(400).json({ error: 'invalid input' })
-    if (norm.length > MAX_INPUT_LENGTH) {
-      return res.status(400).json({ error: `Input too long (max ${MAX_INPUT_LENGTH} chars)` })
-    }
-    const granularity = VALID_GRANULARITIES.has(rawGranularity) ? rawGranularity : 'word'
+export function createApp(loadPipelines = getPipelines) {
+  const app = express()
+  app.use(express.json({ limit: '1mb' }))
+  app.use(express.static(path.join(__dirname, 'public')))
+  app.get('/health', (req, res) => res.json({ ok: true }))
 
-    const { en2zh, zh2en } = await getPipelines()
-    const zhOut = await en2zh(norm)
-    const chinese = (Array.isArray(zhOut) ? zhOut[0]?.translation_text : zhOut?.translation_text) || ''
-
-    const pySentence = chinese ? toPinyin(chinese) : ''
-    const units = chinese ? segment(chinese, granularity) : []
-
-    const segments = []
-    for (const u of units) {
-      if (!u.trim()) continue
-      const py = toPinyin(u)
-      let en = ''
-      try {
-        const enOut = await zh2en(u)
-        en = (Array.isArray(enOut) ? enOut[0]?.translation_text : enOut?.translation_text) || ''
-      } catch (e) {
-        en = ''
+  app.post('/api/translate', rateLimit, async (req, res) => {
+    try {
+      const { english = '', granularity: rawGranularity = 'word' } = req.body || {}
+      if (typeof english !== 'string') return res.status(400).json({ error: 'invalid input' })
+      const norm = normalizeEnglish(english)
+      if (!norm) return res.status(400).json({ error: 'invalid input' })
+      if (norm.length > MAX_INPUT_LENGTH) {
+        return res.status(400).json({ error: `Input too long (max ${MAX_INPUT_LENGTH} chars)` })
       }
-      segments.push({ zh: u, py, en })
+      const granularity = VALID_GRANULARITIES.has(rawGranularity) ? rawGranularity : 'word'
+
+      const { en2zh, zh2en } = await loadPipelines()
+      const zhOut = await en2zh(norm)
+      const chinese = (Array.isArray(zhOut) ? zhOut[0]?.translation_text : zhOut?.translation_text) || ''
+
+      const pySentence = chinese ? toPinyin(chinese) : ''
+      const units = chinese ? segment(chinese, granularity) : []
+
+      const segments = []
+      for (const u of units) {
+        if (!u.trim()) continue
+        const py = toPinyin(u)
+        let en = ''
+        try {
+          const enOut = await zh2en(u)
+          en = (Array.isArray(enOut) ? enOut[0]?.translation_text : enOut?.translation_text) || ''
+        } catch (e) {
+          en = ''
+        }
+        segments.push({ zh: u, py, en })
+      }
+
+      res.json({
+        chinese,
+        pinyin: pySentence,
+        segments,
+        notes: { normalized_english: norm, provider: 'xenova/transformers', granularity }
+      })
+    } catch (e) {
+      console.error('Translation failed:', e.message)
+      res.status(500).json({ error: 'internal error' })
     }
+  })
+  app.use((error, req, res, next) => {
+    const status = error.status === 400 || error.status === 413 ? error.status : 500
+    res.status(status).json({ error: status === 413 ? 'Input too large' : 'invalid request' })
+  })
+  return app
+}
 
-    res.json({
-      chinese,
-      pinyin: pySentence,
-      segments,
-      notes: { normalized_english: norm, provider: 'xenova/transformers', granularity }
-    })
-  } catch (e) {
-    console.error('Translation failed:', e.message)
-    res.status(500).json({ error: 'internal error' })
-  }
-})
+export function startServer(port = process.env.PORT || 3000) {
+  const server = createApp().listen(port, '127.0.0.1', () => {
+    console.log(`Server listening on http://127.0.0.1:${server.address().port}`)
+  })
+  return server
+}
 
-const PORT = process.env.PORT || 3000
-app.listen(PORT, () => {
-  console.log(`Server listening on http://localhost:${PORT}`)
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  startServer()
+}
