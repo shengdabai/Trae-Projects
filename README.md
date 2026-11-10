@@ -42,13 +42,14 @@ This repository is part of a broader AI local-workbench operating model: reusabl
 Use the commands that match the current project state:
 
 ```bash
-npm install
+cd zh-learning-app
+npm ci --registry=https://registry.npmjs.org
 npm start
 ```
 
 | Command | Purpose |
 |---|---|
-| `npm install` | Install project dependencies. |
+| `npm ci --registry=https://registry.npmjs.org` | Install locked project dependencies from `zh-learning-app`. |
 | `npm start` | node server.js |
 
 ## Operating Notes
